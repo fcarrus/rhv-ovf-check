@@ -1,0 +1,2 @@
+ovf_dump_dir: /var/tmp/ovf_dumps
+force_dump: false

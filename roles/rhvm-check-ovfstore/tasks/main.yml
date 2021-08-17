@@ -1,0 +1,35 @@
+
+- name: Get all Storage Domains SD_*
+  local_action: uri
+  args:
+    url: "https://{{ ovirt_auth.hostname }}/ovirt-engine/api/storagedomains?search=name%3DSD_%2A"
+    url_username: "{{ ovirt_auth.username }}"
+    url_password: "{{ ovirt_auth.password }}"
+    validate_certs: false
+    return_content: true
+  register: sd_list_xml
+
+- name: Parse SD xml
+  local_action: xml
+  args:
+    xmlstring: "{{ sd_list_xml.content }}"
+    content: text
+    #xpath: '//storage_domain/master[text() = "true"]/parent::storage_domain/name'
+    xpath: '//storage_domain/name'
+  register: sd_ids_parsed
+
+- set_fact:
+    sd_names: '{{ sd_ids_parsed.matches | map(attribute="name") | list }}'
+
+- include_tasks:
+    file: check-sd.yml
+  loop: "{{ sd_names }}"
+  #- SD_PRD_CORE_NR
+  loop_control:
+    loop_var: sd_name
+
+- assert:
+    that:
+    - '{{ ((bad_vm_list|default([])) | length) == 0 }}'
+    fail_msg: "ERROR: Disk list mismatch for the following VMs/Templates: {{ bad_vm_list }}"
+    success_msg: "The disk list matches for all VMs and Templates"

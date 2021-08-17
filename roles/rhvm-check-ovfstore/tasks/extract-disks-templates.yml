@@ -1,0 +1,78 @@
+# loop: templte_id
+
+- name: "Extract name from template {{ template_id }}"
+  local_action: uri
+  args:
+    url: "https://{{ovirt_auth.hostname}}/ovirt-engine/api/templates/{{ template_id }}"
+    url_username: "{{ ovirt_auth.username }}"
+    url_password: "{{ ovirt_auth.password }}"
+    force_basic_auth: true
+    validate_certs: false
+    return_content: true
+  register: template_xml
+
+- name: Parse template xml
+  local_action: xml
+  args:
+    xmlstring: "{{ template_xml.content }}"
+    xpath: "/template/name"
+    content: text
+  register: template_xml_parsed
+
+- set_fact:
+    template_name: "{{ template_xml_parsed.matches | map(attribute='name') | first }}"
+
+- name: "Extract disks from template {{ template_name }}"
+  local_action: uri
+  args:
+    url: "https://{{ovirt_auth.hostname}}/ovirt-engine/api/templates/{{ template_id }}/diskattachments"
+    url_username: "{{ ovirt_auth.username }}"
+    url_password: "{{ ovirt_auth.password }}"
+    force_basic_auth: true
+    validate_certs: false
+    return_content: true
+  register: template_disks_xml
+
+- name: Parse disks xml (from API)
+  local_action: xml
+  args:
+    xmlstring: "{{ template_disks_xml.content }}"
+    xpath: "//disk[@id]"
+    content: attribute
+  register: template_disks_parsed
+
+- name: Parse disks xml (from OVF)
+  local_action: xml
+  args:
+    path: "{{ ovf_dump_dir }}/{{ ovirt_auth.hostname}}-{{ sd_name }}/{{ template_id }}.ovf"
+    xpath: "//ovf:Envelope/Section/Disk[@ovf:fileRef]"
+    content: attribute
+    namespaces:
+      ovf: "http://schemas.dmtf.org/ovf/envelope/1/" 
+  register: ovf_disks_parsed
+
+- set_fact:
+    template_disk_id_list: "{{ template_disks_parsed.matches | map(attribute='disk.id') | list }}"
+    ovf_disk_id_list: "{{ 
+      ovf_disks_parsed.matches | 
+      selectattr('Disk', 'defined') | 
+      map(attribute='Disk') | 
+      map('dict2items') | 
+      flatten | 
+      selectattr('key','equalto','{http://schemas.dmtf.org/ovf/envelope/1/}fileRef') | 
+      map(attribute='value') | 
+      map('regex_replace','(^.*?)/.*$','\\1') | 
+      list }}"
+
+- set_fact:
+    bad_vm_list: " {{ (bad_vm_list|default([])) + [ template_name ] }} "
+  when: '((template_disk_id_list | difference(ovf_disk_id_list)) | length > 0) or 
+         ((ovf_disk_id_list | difference(template_disk_id_list)) | length > 0)'
+
+# - assert:
+#     that:
+#     - '{{ (template_disk_id_list | difference(ovf_disk_id_list)) | length == 0 }}'
+#     - '{{ (ovf_disk_id_list | difference(template_disk_id_list)) | length == 0 }}'
+#     fail_msg: "--- ERROR: Disk list mismatch for Template {{ template_name }} !!! ---"
+#     success_msg: "The disk list matches for Template {{ template_name }}"
+

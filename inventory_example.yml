@@ -1,0 +1,26 @@
+all:
+  vars:
+    ovirt_auth:
+      username: "myrhvmuser"
+      password: "mysecret"
+      hostname: "{{ groups.rhvm | first }}"
+      insecure: true
+
+  children:
+    rhvm:
+      hosts:
+        rhv-manager.example.com:
+          ansible_user: root
+          ansible_ssh_pass: mysecret
+
+    rhvh:
+      vars:
+        ansible_user: root
+        ansible_ssh_pass: mysecret
+      hosts:
+        rhv-host1.example.com:
+        rhv-host2.example.com:
+        rhv-host3.example.com:
+        rhv-host4.example.com:
+        rhv-host5.example.com:
+        rhv-host6.example.com:

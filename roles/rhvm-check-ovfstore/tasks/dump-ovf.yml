@@ -1,0 +1,40 @@
+# disk_id
+
+- name: "Activate LV {{ disk_id }}"
+  delegate_to: "{{ spm_host }}"
+  command:
+    cmd: "lvchange -ay --config 'global { use_lvmetad=0 } devices { filter = [ a|.*| ] }' /dev/{{ vg }}/{{ disk_id }}"
+  register: lvchange
+
+- name: "Dump OVF disk {{ disk_id }}"
+  delegate_to: "{{ spm_host }}"
+  command:
+    cmd: "dd if=/dev/{{ vg }}/{{ disk_id }} of=/tmp/{{ disk_id }}.ovf"
+  
+- name: "Deactivate LV {{ disk_id }}"
+  delegate_to: "{{ spm_host }}"
+  command:
+    cmd: "lvchange -an --config 'global { use_lvmetad=0 } devices { filter = [ a|.*| ] }' /dev/{{ vg }}/{{ disk_id }}"
+  register: lvchange
+
+- name: Create temp directory for OVF dumps
+  local_action: file
+  args:
+    state: directory
+    path: "{{ ovf_dump_dir }}/"
+
+- name: "Download OVF disk {{ disk_id }}.ovf"
+  delegate_to: "{{ spm_host }}"
+  fetch:
+    dest: "{{ ovf_dump_dir }}/{{ ovirt_auth.hostname }}-{{ sd_name }}-{{ disk_id }}.ovf"
+    flat: true
+    src: "/tmp/{{ disk_id }}.ovf"
+    validate_checksum: true
+
+- name: "Remove dump from {{ spm_host }}"
+  delegate_to: "{{ spm_host }}"
+  file:
+    state: absent
+    path: "/tmp/{{ disk_id }}.ovf"
+
+

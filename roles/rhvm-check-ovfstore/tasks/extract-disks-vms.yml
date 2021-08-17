@@ -1,0 +1,78 @@
+# loop: vm_id
+
+- name: "Extract name from vm {{ vm_id }}"
+  local_action: uri
+  args:
+    url: "https://{{ovirt_auth.hostname}}/ovirt-engine/api/vms/{{ vm_id }}"
+    url_username: "{{ ovirt_auth.username }}"
+    url_password: "{{ ovirt_auth.password }}"
+    force_basic_auth: true
+    validate_certs: false
+    return_content: true
+  register: vm_xml
+
+- name: Parse vm xml
+  local_action: xml
+  args:
+    xmlstring: "{{ vm_xml.content }}"
+    xpath: "/vm/name"
+    content: text
+  register: vm_xml_parsed
+
+- set_fact:
+    vm_name: "{{ vm_xml_parsed.matches | map(attribute='name') | first }}"
+
+- name: "Extract disks from vm {{ vm_name }}"
+  local_action: uri
+  args:
+    url: "https://{{ovirt_auth.hostname}}/ovirt-engine/api/vms/{{ vm_id }}/diskattachments"
+    url_username: "{{ ovirt_auth.username }}"
+    url_password: "{{ ovirt_auth.password }}"
+    force_basic_auth: true
+    validate_certs: false
+    return_content: true
+  register: vm_disks_xml
+
+- name: Parse disks xml (from API)
+  local_action: xml
+  args:
+    xmlstring: "{{ vm_disks_xml.content }}"
+    xpath: "//disk[@id]"
+    content: attribute
+  register: vm_disks_parsed
+
+- name: Parse disks xml (from OVF)
+  local_action: xml
+  args:
+    path: "{{ ovf_dump_dir }}/{{ ovirt_auth.hostname }}-{{ sd_name }}/{{ vm_id }}.ovf"
+    xpath: "//ovf:Envelope/Section/Disk[@ovf:fileRef]"
+    content: attribute
+    namespaces:
+      ovf: "http://schemas.dmtf.org/ovf/envelope/1/" 
+  register: ovf_disks_parsed
+
+- set_fact:
+    vm_disk_id_list: "{{ vm_disks_parsed.matches | map(attribute='disk.id') | list }}"
+    ovf_disk_id_list: "{{ 
+      ovf_disks_parsed.matches | 
+      selectattr('Disk', 'defined') | 
+      map(attribute='Disk') | 
+      map('dict2items') | 
+      flatten | 
+      selectattr('key','equalto','{http://schemas.dmtf.org/ovf/envelope/1/}fileRef') | 
+      map(attribute='value') | 
+      map('regex_replace','(^.*?)/.*$','\\1') | 
+      list }}"
+
+- set_fact:
+    bad_vm_list: " {{ (bad_vm_list|default([])) + [ vm_name ] }} "
+  when: '((vm_disk_id_list | difference(ovf_disk_id_list)) | length > 0) or 
+         ((ovf_disk_id_list | difference(vm_disk_id_list)) | length > 0)'
+
+# - assert:
+#     that:
+#     - '{{ (vm_disk_id_list | difference(ovf_disk_id_list)) | length == 0 }}'
+#     - '{{ (ovf_disk_id_list | difference(vm_disk_id_list)) | length == 0 }}'
+#     fail_msg: "--- ERROR: Disk list mismatch for VM {{ vm_name }} !!! ---"
+#     success_msg: "The disk list matches for VM {{ vm_name }}"
+

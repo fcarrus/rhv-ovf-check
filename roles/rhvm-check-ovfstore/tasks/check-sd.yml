@@ -1,0 +1,206 @@
+# loop: sd_name
+
+- name: "Retrieve all hosts for {{ sd_name }}"
+  local_action: uri
+  args:
+    url: "https://{{ ovirt_auth.hostname }}/ovirt-engine/api/hosts?search=storage%3D{{ sd_name }}"
+    url_username: "{{ ovirt_auth.username }}"
+    url_password: "{{ ovirt_auth.password }}"
+    validate_certs: false
+    return_content: true
+  register: hosts_list_xml
+
+- name: Parse host xml
+  local_action: xml
+  args:
+    xmlstring: "{{ hosts_list_xml.content }}"
+    xpath: "//host/spm/status[text() = 'spm']/parent::spm/parent::host/name"
+    content: text
+  register: host_id_parsed
+
+- set_fact:
+    spm_host: "{{ host_id_parsed.matches[0].name }}"
+
+- debug:
+    msg: "SPM host for {{ sd_name }} is {{ spm_host }}"
+
+- name: "Retrieve OVF disks on SD {{ sd_name }}"
+  local_action: uri
+  args:
+    url: "https://{{ ovirt_auth.hostname }}/ovirt-engine/api/disks?search=storage%3D{{ sd_name }}+and+disk_content_type%3Dovf_store"
+    url_username: "{{ ovirt_auth.username }}"
+    url_password: "{{ ovirt_auth.password }}"
+    validate_certs: false
+    return_content: true
+  register: ovf_list_xml
+
+- name: Parse ovf disks xml for vg
+  local_action: xml
+  args:
+    xmlstring: "{{ ovf_list_xml.content }}"
+    xpath: "//storage_domain"
+    content: attribute
+  register: ovf_vg_parsed
+
+- name: Parse ovf disks xml for disk id
+  local_action: xml
+  args:
+    xmlstring: "{{ ovf_list_xml.content }}"
+    xpath: "//image_id"
+    content: text
+  register: ovf_id_parsed
+
+- set_fact:
+    vg: "{{ 
+      ovf_vg_parsed.matches | 
+      selectattr('storage_domain','defined') | 
+      map(attribute='storage_domain.id') | 
+      list | first }}"
+    ovf_disk_ids:  "{{ ovf_id_parsed.matches | map(attribute='image_id') | list }}"
+
+- name: Check if OVF dump already exists
+  local_action: stat
+  args:
+    path: "{{ ovf_dump_dir }}/{{ ovirt_auth.hostname }}-{{ sd_name }}-{{ disk_id }}.ovf"
+    get_attributes: false
+    get_checksum: false
+    get_mime: false
+  loop: "{{ ovf_disk_ids }}"
+  loop_control:
+    loop_var: disk_id
+  register: stat_ovf_dumps
+
+- name: Dump OVF disks
+  include_tasks:
+    file: dump-ovf.yml
+  loop: "{{ ovf_disk_ids }}"
+  loop_control:
+    loop_var: disk_id
+  when: ' force_dump or
+          not stat_ovf_dumps.results[0].stat.exists or
+          not stat_ovf_dumps.results[1].stat.exists '
+
+- name: Check sha256 of OVF dumps match
+  local_action: shell
+  args:
+    cmd: "tar xOf {{ ovf_dump_dir }}/{{ ovirt_auth.hostname }}-{{ sd_name }}-{{ disk_id }}.ovf | sha256sum | awk '{ print $1 }'"
+  register: ovf_checksums
+  loop: "{{ ovf_disk_ids }}"
+  loop_control:
+    loop_var: disk_id
+
+- name: Check OVF checksums are the same
+  pause:
+    prompt: "WARNING: OVF sha256 checksums don't match. Press ENTER to continue."
+  when:
+  - " ovf_checksums.results[0].stdout != ovf_checksums.results[1].stdout "
+
+- set_fact:
+    ovf_disk_id: "{{ ovf_disk_ids | first }}"
+
+- name: "Create dir {{ ovf_dump_dir }}/{{ ovirt_auth.hostname }}-{{ sd_name }}"
+  local_action: file
+  args:
+    state: directory
+    path: "{{ ovf_dump_dir }}/{{ ovirt_auth.hostname }}-{{ sd_name }}"
+
+- name: "Extract {{ ovirt_auth.hostname }}-{{ sd_name }}-{{ ovf_disk_id }}.ovf to {{ ovf_dump_dir }}/{{ ovirt_auth.hostname }}-{{ sd_name }}"
+  local_action: unarchive
+  args:
+    src: "{{ ovf_dump_dir }}/{{ ovirt_auth.hostname }}-{{ sd_name }}-{{ ovf_disk_id }}.ovf"
+    dest: "{{ ovf_dump_dir }}/{{ ovirt_auth.hostname }}-{{ sd_name }}"
+
+- name: "List all xml files in {{ ovf_dump_dir }}/{{ ovirt_auth.hostname }}-{{ sd_name }}"
+  local_action: find
+  args:
+    file_type: file
+    paths:
+    - "{{ ovf_dump_dir }}/{{ ovirt_auth.hostname }}-{{ sd_name }}"
+    patterns:
+    - "*.ovf"
+    recurse: no
+  register: xml_files_list
+
+# Lista VM ottenuta da OVF Store
+- set_fact:
+    ovf_vm_ids: "{{ 
+      xml_files_list.files | 
+      map(attribute='path') |
+      map('replace', ovf_dump_dir + '/' + ovirt_auth.hostname + '-' + sd_name + '/', '') |
+      map('replace', '.ovf', '') | list }}"
+
+# Lista VM ottenuta da API RHV
+- name: "Retrieve list of VMs on SD {{ sd_name }}"
+  local_action: uri
+  args:
+    url: "https://{{ ovirt_auth.hostname }}/ovirt-engine/api/vms?search=storage%3D{{ sd_name }}"
+    url_username: "{{ ovirt_auth.username }}"
+    url_password: "{{ ovirt_auth.password }}"
+    validate_certs: false
+    return_content: true
+  register: vm_list_xml
+
+- name: Parse vm disks xml for vg
+  local_action: xml
+  args:
+    xmlstring: "{{ vm_list_xml.content }}"
+    xpath: "//vm[@id]"
+    content: attribute
+  register: vm_list_parsed
+  failed_when: false
+
+# Lista Template ottenuta da API RHV
+- name: "Retrieve list of Templates on SD {{ sd_name }}"
+  local_action: uri
+  args:
+    url: "https://{{ ovirt_auth.hostname }}/ovirt-engine/api/templates?search=storage%3D{{ sd_name }}"
+    url_username: "{{ ovirt_auth.username }}"
+    url_password: "{{ ovirt_auth.password }}"
+    validate_certs: false
+    return_content: true
+  register: template_list_xml
+
+- name: Parse template disks xml for vg
+  local_action: xml
+  args:
+    xmlstring: "{{ template_list_xml.content }}"
+    xpath: "//template[@id]"
+    content: attribute
+  register: template_list_parsed
+  failed_when: false
+
+- set_fact:
+    vm_ids: "{{ (vm_list_parsed.matches|default([])) | selectattr('vm','defined') | map(attribute='vm.id') | list }}"
+    template_ids: "{{ (template_list_parsed.matches|default([])) | selectattr('template','defined') | map(attribute='template.id') | list }}"
+
+- pause:
+    prompt: |
+      --- WARNING: VM list in API and OVF Store mismatch on {{ sd_name }}!! ---
+      API reports : {{ vm_ids | length }} VMs + {{ template_ids | length }} Templates
+      OVF reports : {{ ovf_vm_ids | length }} total objects
+      {% if ((vm_ids+template_ids) | difference(ovf_vm_ids) | length > 0) %}
+      API mismatching objects: {{ (vm_ids+template_ids) | difference(ovf_vm_ids) | join(', ') }}
+      {% endif %}
+      {% if (ovf_vm_ids | difference(vm_ids+template_ids) | length > 0) %}
+      OVF mismatching objects: {{ (ovf_vm_ids | difference(vm_ids+template_ids) | join(', ') }}
+      {% endif %}
+      Refer to the files in {{ ovf_dump_dir }} for more information.
+      Press Enter to continue
+  when: " ((vm_ids+template_ids) | difference(ovf_vm_ids) | length > 0) or 
+           (ovf_vm_ids | difference(vm_ids+template_ids) | length > 0) "
+
+- name: Extract disks for all VMs
+  include_tasks:
+    file: extract-disks-vms.yml 
+  loop: "{{ vm_ids }}"
+  loop_control:
+    loop_var: vm_id
+
+- name: Extract disks for all Templates
+  include_tasks:
+    file: extract-disks-templates.yml 
+  loop: "{{ template_ids }}"
+  loop_control:
+    loop_var: template_id
+  
+  

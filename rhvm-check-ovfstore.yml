@@ -1,0 +1,9 @@
+- name: Check OVF Store
+  hosts: rhvm
+  become: false
+  gather_facts: false
+  tasks:
+  
+  - include_role:
+      name: rhvm-check-ovfstore
+
