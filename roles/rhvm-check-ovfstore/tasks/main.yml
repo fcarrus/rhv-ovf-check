@@ -1,8 +1,8 @@
 
-- name: Get all Storage Domains SD_*
+- name: Get all Storage Domains
   local_action: uri
   args:
-    url: "https://{{ ovirt_auth.hostname }}/ovirt-engine/api/storagedomains?search=name%3DSD_%2A"
+    url: "https://{{ ovirt_auth.hostname }}/ovirt-engine/api/storagedomains"
     url_username: "{{ ovirt_auth.username }}"
     url_password: "{{ ovirt_auth.password }}"
     validate_certs: false
@@ -24,7 +24,6 @@
 - include_tasks:
     file: check-sd.yml
   loop: "{{ sd_names }}"
-  #- SD_PRD_CORE_NR
   loop_control:
     loop_var: sd_name
 
